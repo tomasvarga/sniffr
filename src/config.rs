@@ -40,11 +40,18 @@ impl Config {
     pub fn path() -> PathBuf {
         Self::dir().join("config.toml")
     }
-    /// Load the config, or defaults if missing/unparseable.
+    /// Load the config, or defaults if missing. A malformed config warns (so a
+    /// typo isn't silently swallowed into all-defaults) then falls back.
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path())
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+        let Ok(s) = std::fs::read_to_string(Self::path()) else {
+            return Self::default();
+        };
+        match toml::from_str(&s) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("sniffr: ignoring malformed config {}: {e}", Self::path().display());
+                Self::default()
+            }
+        }
     }
 }

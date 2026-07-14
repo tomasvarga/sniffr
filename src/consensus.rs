@@ -22,8 +22,13 @@ pub async fn merge(pool: &[Finding], default_agent: &str, cfg: &Config) -> Resul
     let pool_json = serde_json::to_string(pool)?;
     let full = format!("{instructions}\n\nFINDINGS:\n{pool_json}");
 
-    let out = agent::run_agent(&cagent, model.as_deref(), &full)
-        .await
-        .unwrap_or_default();
+    let out = match agent::run_agent(&cagent, model.as_deref(), &full).await {
+        Ok(o) => o,
+        Err(e) => {
+            // empty → caller keeps the raw pool as a fallback, but say why
+            eprintln!("sniffr: consensus agent '{cagent}' failed: {e}");
+            return Ok(Vec::new());
+        }
+    };
     Ok(resolve::extract_array::<Finding>(&out))
 }

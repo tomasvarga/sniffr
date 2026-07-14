@@ -56,7 +56,8 @@ fn prepend(bin: &str, mut rest: Vec<String>) -> Vec<String> {
 /// Spawn argv[0] with argv[1..]; optionally feed `stdin`; capture stdout.
 async fn run(argv: &[String], stdin: Option<&str>) -> Result<String> {
     let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..]).stdout(Stdio::piped()).stderr(Stdio::null());
+    // capture stderr so a crashed agent surfaces *why* instead of looking clean
+    cmd.args(&argv[1..]).stdout(Stdio::piped()).stderr(Stdio::piped());
     if stdin.is_some() {
         cmd.stdin(Stdio::piped());
     }
@@ -71,5 +72,11 @@ async fn run(argv: &[String], stdin: Option<&str>) -> Result<String> {
         });
     }
     let out = child.wait_with_output().await?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let err = err.trim();
+        let tail = if err.is_empty() { String::new() } else { format!(": {err}") };
+        bail!("agent '{}' exited unsuccessfully ({}){tail}", argv[0], out.status);
+    }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

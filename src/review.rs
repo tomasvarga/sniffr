@@ -90,7 +90,13 @@ pub async fn run(target_str: &str, args: &ReviewArgs, cfg: &Config) -> Result<()
         // progressive inject: each agent's findings land as it finishes
         let mut total = 0usize;
         for ag in &agents {
-            let out = agent::run_agent(ag, model.as_deref(), &full).await.unwrap_or_default();
+            let out = match agent::run_agent(ag, model.as_deref(), &full).await {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("sniffr: agent '{ag}' failed: {e}");
+                    continue;
+                }
+            };
             let f = apply_filters(resolve::resolve(&diff, &out, ag), args, cfg);
             total += backend::inject(&backend_name, &tgt, &patch, &f, after.as_deref(), cfg).await?;
         }
@@ -106,7 +112,13 @@ async fn run_agents_parallel(agents: &[String], model: Option<String>, full: Arc
         let (full, diff, sem, model) = (full.clone(), diff.clone(), sem.clone(), model.clone());
         set.spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore");
-            let out = agent::run_agent(&ag, model.as_deref(), &full).await.unwrap_or_default();
+            let out = match agent::run_agent(&ag, model.as_deref(), &full).await {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("sniffr: agent '{ag}' failed: {e}");
+                    String::new()
+                }
+            };
             (i, resolve::resolve(&diff, &out, &ag))
         });
     }

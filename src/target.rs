@@ -20,8 +20,13 @@ pub fn parse(t: &str) -> Result<Target> {
         }
     } else if let Some((repo, num)) = t.split_once('#') {
         (repo.to_string(), num.to_string())
+    } else if !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) {
+        // bare PR number → resolve the repo from the cwd (like the bash `gh repo view`)
+        let repo = gh_current_repo()
+            .ok_or_else(|| anyhow::anyhow!("bare number needs a repo cwd; pass owner/repo#N or a URL"))?;
+        (repo, t.to_string())
     } else {
-        bail!("bare number needs owner/repo#N or a URL: {t}");
+        bail!("unrecognized PR target: {t}");
     };
     let num: String = num.chars().take_while(|c| c.is_ascii_digit()).collect();
     if num.is_empty() {
@@ -33,6 +38,19 @@ pub fn parse(t: &str) -> Result<Target> {
         repo,
         num,
     })
+}
+
+/// The `owner/repo` of the cwd's default remote, via `gh repo view`.
+fn gh_current_repo() -> Option<String> {
+    let out = std::process::Command::new("gh")
+        .args(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 pub async fn diff(t: &Target) -> Result<String> {
