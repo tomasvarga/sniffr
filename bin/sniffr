@@ -48,9 +48,10 @@ CONFIG_FILE="$CONF_DIR/config.toml"
 _self="${BASH_SOURCE[0]:-$0}"
 while [ -L "$_self" ]; do t="$(readlink "$_self")"; case "$t" in /*) _self="$t" ;; *) _self="$(dirname "$_self")/$t" ;; esac; done
 SNIFFR_ROOT="$(cd "$(dirname "$_self")/.." 2>/dev/null && pwd)"
-# Default prompts live in prompts/*.txt (data, not baked into this script), so
-# they can be read/edited/versioned. A user override in config always wins.
-read_prompt(){ local f="$SNIFFR_ROOT/prompts/$1.txt"; [ -f "$f" ] && cat "$f"; }
+# Default prompts live in prompts/*.md (data, not baked into this script), so
+# they can be read/edited/versioned. Content is passed VERBATIM to the agent
+# (markdown is just text). A user override in config always wins. .txt accepted too.
+read_prompt(){ local e f; for e in md txt; do f="$SNIFFR_ROOT/prompts/$1.$e"; [ -f "$f" ] && { cat "$f"; return; }; done; }
 
 # config.toml as JSON ({} if missing/unparseable). Needs python ≥3.11 (tomllib).
 cfg_json(){
