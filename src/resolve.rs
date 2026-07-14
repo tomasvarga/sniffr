@@ -11,7 +11,7 @@ type NewLines = Vec<(u32, String)>; // (new-side line no, text without +/space)
 
 /// Resolve one agent's raw output against the diff into stamped findings.
 pub fn resolve(diff: &str, agent_output: &str, agent: &str) -> Vec<Finding> {
-    let items = extract_array(agent_output);
+    let items: Vec<AgentFinding> = extract_array(agent_output);
     let files = parse_diff(diff);
     let mut out = Vec::new();
     for it in items {
@@ -47,19 +47,19 @@ pub fn resolve(diff: &str, agent_output: &str, agent: &str) -> Vec<Finding> {
     out
 }
 
-/// Pull the largest JSON array-of-objects out of a model's stdout (handles prose
-/// or fences around it).
-pub fn extract_array(s: &str) -> Vec<AgentFinding> {
-    if let Ok(v) = serde_json::from_str::<Vec<AgentFinding>>(s.trim()) {
+/// Pull the largest JSON array-of-`T` out of a model's stdout (handles prose or
+/// fences around it). Used for agent output (AgentFinding) and merged (Finding).
+pub fn extract_array<T: serde::de::DeserializeOwned>(s: &str) -> Vec<T> {
+    if let Ok(v) = serde_json::from_str::<Vec<T>>(s.trim()) {
         return v;
     }
     let bytes = s.as_bytes();
-    let mut best: Vec<AgentFinding> = Vec::new();
+    let mut best: Vec<T> = Vec::new();
     for (i, _) in s.match_indices('[') {
         let mut j = s.len();
         while j > i {
             if bytes[j - 1] == b']' {
-                if let Ok(v) = serde_json::from_str::<Vec<AgentFinding>>(&s[i..j]) {
+                if let Ok(v) = serde_json::from_str::<Vec<T>>(&s[i..j]) {
                     if v.len() >= best.len() {
                         best = v;
                     }

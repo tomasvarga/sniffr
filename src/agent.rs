@@ -5,14 +5,6 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-/// `cursor` is an alias for the `cursor-agent` binary.
-pub fn agent_bin(agent: &str) -> &str {
-    match agent {
-        "cursor" => "cursor-agent",
-        other => other,
-    }
-}
-
 /// Run one agent over `prompt`; return its raw stdout (stderr discarded).
 pub async fn run_agent(agent: &str, model: Option<&str>, prompt: &str) -> Result<String> {
     if let Ok(cmd) = std::env::var("SNIFFR_CMD") {

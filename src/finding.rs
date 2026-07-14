@@ -38,6 +38,15 @@ pub struct Finding {
 }
 
 impl Finding {
+    /// Comment author stamp: "consensus" for a merged finding, else the agent.
+    pub fn author(&self) -> String {
+        if self.agents.is_empty() {
+            self.agent.clone().unwrap_or_else(|| "agent".into())
+        } else {
+            "consensus".into()
+        }
+    }
+
     /// Severity icon for the badge (matches the bash mkbadge).
     pub fn icon(&self) -> &'static str {
         match self.severity.as_deref() {

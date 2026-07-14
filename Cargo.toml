@@ -2,6 +2,7 @@
 name = "sniffr"
 version = "0.4.0-dev"
 edition = "2021"
+rust-version = "1.82"
 description = "An AI sniffs your PR for issues before you review it — agent → line-anchored findings → your terminal reviewer (tuicr/hunk/custom) or JSON."
 license = "MIT"
 repository = "https://github.com/tomasvarga/sniffr"
@@ -13,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "time", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
