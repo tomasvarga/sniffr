@@ -2,8 +2,18 @@
 //! parallel. `SNIFFR_CMD` is the escape hatch (prompt on stdin → JSON on stdout).
 use anyhow::{bail, Context, Result};
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+
+/// Per-agent wall-clock cap (SNIFFR_AGENT_TIMEOUT seconds, 0 = unlimited; default 300).
+fn agent_timeout() -> Option<Duration> {
+    match std::env::var("SNIFFR_AGENT_TIMEOUT").ok().and_then(|s| s.parse::<u64>().ok()) {
+        Some(0) => None,
+        Some(n) => Some(Duration::from_secs(n)),
+        None => Some(Duration::from_secs(300)),
+    }
+}
 
 /// Run one agent over `prompt`; return its raw stdout (stderr discarded).
 pub async fn run_agent(agent: &str, model: Option<&str>, prompt: &str) -> Result<String> {
@@ -56,8 +66,9 @@ fn prepend(bin: &str, mut rest: Vec<String>) -> Vec<String> {
 /// Spawn argv[0] with argv[1..]; optionally feed `stdin`; capture stdout.
 async fn run(argv: &[String], stdin: Option<&str>) -> Result<String> {
     let mut cmd = Command::new(&argv[0]);
-    // capture stderr so a crashed agent surfaces *why* instead of looking clean
-    cmd.args(&argv[1..]).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // capture stderr so a crashed agent surfaces *why* instead of looking clean;
+    // kill_on_drop so a timed-out child is reaped, not left hanging
+    cmd.args(&argv[1..]).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     if stdin.is_some() {
         cmd.stdin(Stdio::piped());
     }
@@ -71,7 +82,14 @@ async fn run(argv: &[String], stdin: Option<&str>) -> Result<String> {
             // si dropped here → stdin closed (EOF)
         });
     }
-    let out = child.wait_with_output().await?;
+    let out = match agent_timeout() {
+        Some(d) => match tokio::time::timeout(d, child.wait_with_output()).await {
+            Ok(res) => res?,
+            // future dropped here → child killed via kill_on_drop
+            Err(_) => bail!("agent '{}' timed out after {}s (set SNIFFR_AGENT_TIMEOUT=0 to disable)", argv[0], d.as_secs()),
+        },
+        None => child.wait_with_output().await?,
+    };
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let err = err.trim();

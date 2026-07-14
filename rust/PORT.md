@@ -38,6 +38,13 @@ the resolver (parse_diff / match_file / resolve_line / extract_array).
 - **Agent failures surface** — `agent.rs` checks child exit status + captures stderr; `review.rs`/`consensus.rs` log a failed agent instead of `.unwrap_or_default()`, so "crashed" ≠ "found nothing". `config.rs` warns on a malformed config.
 - **Resolver hardened** — `extract_array` bracket-matching is string/escape-aware (a `code` field with `[`/`]` no longer mis-parses); `parse_diff` resets context on `diff --git` (kills the junk-lines quirk).
 
+## Found by dogfooding (sniffr reviewed PR #1)
+A `sniffr tomasvarga/sniffr#1` run (claude, `--format json`) flagged two real, pre-existing resolver bugs — both fixed, both with regression tests:
+- **`match_file` suffix now respects path boundaries** — `a.rs` no longer anchors into `banana.rs`; requires a `/` boundary.
+- **`+++ ` mid-hunk is content, not a header** — header detection is gated on `newno.is_none()`, so an added line beginning `++ ` (patch/markdown fixtures) no longer desyncs line numbers.
+- **Per-agent timeout** — the run also exposed that a hung agent (a 47-min `codex exec` stall) blocks forever. `agent.rs` now wraps each agent in `tokio::time::timeout` (`SNIFFR_AGENT_TIMEOUT` secs, default 300, `0` = off) with `kill_on_drop`, so a stuck agent is killed and surfaced instead of hanging.
+- `cargo test` → 10 tests.
+
 ## Deferred hardening (from codex arch review — v2, would diverge from bash parity)
 - Make "validated anchored candidate" the boundary; reject unanchored findings in inject mode.
 - Strict (exact) `code` anchoring; deterministic path matching.

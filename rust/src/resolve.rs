@@ -113,7 +113,10 @@ fn parse_diff(diff: &str) -> HashMap<String, NewLines> {
             // `index` lines can't be mistaken for context of the previous file
             cur = None;
             newno = None;
-        } else if let Some(rest) = ln.strip_prefix("+++ ") {
+        } else if newno.is_none() && ln.strip_prefix("+++ ").is_some() {
+            // file header — but ONLY when not mid-hunk, so an added content line
+            // like `+++ foo` (a .patch/markdown fixture) isn't read as a header
+            let rest = ln.strip_prefix("+++ ").unwrap();
             let p = rest.split('\t').next().unwrap_or("").trim();
             let p = p.strip_prefix("b/").unwrap_or(p);
             cur = if p == "/dev/null" {
@@ -122,8 +125,7 @@ fn parse_diff(diff: &str) -> HashMap<String, NewLines> {
                 files.entry(p.to_string()).or_default();
                 Some(p.to_string())
             };
-            newno = None;
-        } else if ln.starts_with("--- ") {
+        } else if newno.is_none() && ln.starts_with("--- ") {
             continue;
         } else if let Some(c) = hunk.captures(ln) {
             newno = c.get(1).and_then(|m| m.as_str().parse().ok());
@@ -153,7 +155,9 @@ fn match_file(files: &HashMap<String, NewLines>, fpath: &str) -> Option<String> 
         return Some(fpath.to_string());
     }
     for k in files.keys() {
-        if k.ends_with(fpath) || fpath.ends_with(k.as_str()) {
+        // suffix match, but only on a path-component boundary so a finding for
+        // `a.rs` can't anchor into `banana.rs` (whose name merely ends in "a.rs")
+        if k.ends_with(&format!("/{fpath}")) || fpath.ends_with(&format!("/{k}")) {
             return Some(k.clone());
         }
     }
@@ -263,6 +267,40 @@ index 333..444 100644
         assert_eq!(match_file(&files, "a.rs").as_deref(), Some("src/a.rs")); // basename
         assert_eq!(match_file(&files, "repo/src/b.rs").as_deref(), Some("src/b.rs")); // suffix
         assert_eq!(match_file(&files, "nope.rs"), None);
+    }
+
+    #[test]
+    fn match_file_suffix_respects_path_boundary() {
+        // "a.rs" must NOT match "src/banana.rs" just because the name ends in "a.rs"
+        let mut files: HashMap<String, NewLines> = HashMap::new();
+        files.insert("src/banana.rs".into(), vec![(1, "x".into())]);
+        assert_eq!(match_file(&files, "a.rs"), None); // must NOT match banana.rs
+
+        // with a real "a.rs" present, "a.rs" resolves to it, never to banana.rs
+        files.insert("src/a.rs".into(), vec![(1, "y".into())]);
+        assert_eq!(match_file(&files, "a.rs").as_deref(), Some("src/a.rs"));
+    }
+
+    #[test]
+    fn parse_diff_added_line_starting_with_plus_plus_is_not_a_header() {
+        // a PR that adds a markdown line literally beginning with "++ " shows up
+        // as "+++ ..." in the diff; it must be content, not a bogus file header
+        let diff = "\
+diff --git a/notes.md b/notes.md
+index 1..2 100644
+--- a/notes.md
++++ b/notes.md
+@@ -1,1 +1,3 @@
+ intro
++++ not a header, just text
++real line
+";
+        let files = parse_diff(diff);
+        assert_eq!(files.len(), 1, "no bogus second file entry");
+        let f = files.get("notes.md").unwrap();
+        // "+++ ..." → stripped of one '+' → "++ not a header, just text" at new line 2
+        assert_eq!(f[1], (2, "++ not a header, just text".into()));
+        assert_eq!(f[2], (3, "real line".into())); // line numbering stayed in sync
     }
 
     #[test]
