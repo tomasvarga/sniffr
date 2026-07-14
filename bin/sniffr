@@ -22,13 +22,15 @@
 #   sniffr queue [--since 3w]    pick from the PRs awaiting your review
 #   sniffr doctor                check deps, gh auth, agent, backend
 #   sniffr setup                 print an agent setup prompt (pipe to your agent)
+#   sniffr update                git-pull the installed clone to the latest
+#   sniffr version               print the installed version
 #
 # Attach mode: sniffr injects into a reviewer session that is ALREADY OPEN. Open
 # it first (`tuicr pr <pr>` / `hunk patch <diff>`), then run sniffr — or use
 # --format json and pipe the findings wherever you like.
 #
 # Comments are LOCAL DRAFTS only — sniffr NEVER posts to GitHub. You prune them
-# (dd / :clearc in tuicr) and submit yourself.
+# (dd / :clear in tuicr) and submit yourself.
 #
 # Agent (first match wins): --agent flag · SNIFFR_AGENT env · saved default
 # (`sniffr --set-agent <name>`, stored in ~/.config/sniffr/agent) · codex.
@@ -532,6 +534,30 @@ PY
   exit 0
 fi
 
+# ============================ version / update ===============================
+if [ "${1:-}" = "version" ] || [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
+  v="$(git -C "$SNIFFR_ROOT" describe --tags --always --dirty 2>/dev/null)"
+  echo "sniffr ${v:-unknown} ($SNIFFR_ROOT)"; exit 0
+fi
+# `sniffr update` — pull the installed clone (install.sh clones a git repo to
+# ~/.local/share/sniffr) and re-link. Not a git checkout → point at install.sh.
+if [ "${1:-}" = "update" ]; then
+  command -v git >/dev/null || die "git required to update"
+  if [ ! -d "$SNIFFR_ROOT/.git" ]; then
+    echo "sniffr: $SNIFFR_ROOT isn't a git checkout — reinstall to update:" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/tomasvarga/sniffr/main/install.sh | bash" >&2
+    exit 1
+  fi
+  before="$(git -C "$SNIFFR_ROOT" rev-parse --short HEAD 2>/dev/null)"
+  echo "sniffr: updating $SNIFFR_ROOT …"
+  git -C "$SNIFFR_ROOT" pull --ff-only 2>&1 | sed 's/^/  /' || die "update failed (local changes? cd $SNIFFR_ROOT && git status)"
+  chmod +x "$SNIFFR_ROOT/bin/sniffr" 2>/dev/null || true
+  after="$(git -C "$SNIFFR_ROOT" rev-parse --short HEAD 2>/dev/null)"
+  if [ "$before" = "$after" ]; then echo "sniffr: already up to date ($(git -C "$SNIFFR_ROOT" describe --tags --always 2>/dev/null))."
+  else echo "sniffr: updated $before → $(git -C "$SNIFFR_ROOT" describe --tags --always 2>/dev/null)."; fi
+  exit 0
+fi
+
 # ===================== setup: print the agent setup prompt ====================
 # `sniffr setup | pbcopy` (or just read it) → paste into a coding agent and it
 # walks the install/config for you.
@@ -737,7 +763,7 @@ while [ $# -gt 0 ]; do
       mkdir -p "$CONF_DIR"; printf '%s\n' "$a" > "$CONF_DIR/agent"
       echo "sniffr: default agent set to '$a' (~/.config/sniffr/agent)"; exit 0 ;;
     --show-agent) echo "sniffr: default agent = $(default_agent)"; exit 0 ;;
-    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
     -*) die "unknown flag: $1" ;;
     *) target="$1"; shift ;;
   esac
