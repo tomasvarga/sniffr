@@ -12,6 +12,9 @@
 #   sniffr <pr> --agent grok           one agent, or a comma list (codex,claude)
 #   sniffr <pr> --backend hunk   inject findings into hunk instead of tuicr
 #   sniffr <pr> --model <name>   model for the agent (else its default/auto)
+#   sniffr <pr> --consensus      merge multi-agent findings into one comment per
+#                                bug (agent chips); cheap model via [consensus]
+#   sniffr <pr> --min-severity high    only keep critical/high findings
 #   sniffr <pr> --bg             review in the background; keep reading meanwhile
 #   sniffr <pr> --format json    print resolved findings as JSON (no reviewer)
 #   sniffr <pr> --after-inject <cmd>   run <cmd> after findings land (reload hook)
@@ -148,6 +151,21 @@ if [ "${1:-}" = "--worker" ]; then
   # → empty (each agent's own default). MAIN/--bg pass the resolved value here.
   MODEL="${SNIFFR_MODEL:-$(cfg_json | jq -r '.model // empty')}"
   FORMAT="${SNIFFR_FORMAT:-inject}"   # inject → into the live reviewer session; json → print findings
+  # ---- consensus: an optional CHEAP model that merges the multi-agent findings
+  # into one deduped, well-written comment per bug (with agent chips). On when
+  # [consensus].model is set (or SNIFFR_CONSENSUS / --consensus). Needs >1 agent.
+  CMODEL="${SNIFFR_CONSENSUS_MODEL:-$(cfg_json | jq -r '.consensus.model // empty')}"
+  CAGENT="${SNIFFR_CONSENSUS_AGENT:-$(cfg_json | jq -r '.consensus.agent // empty')}"
+  CPROMPT="${SNIFFR_CONSENSUS_PROMPT:-$(cfg_json | jq -r '.consensus.prompt // empty')}"
+  CONSENSUS=0; { [ -n "${SNIFFR_CONSENSUS:-}" ] || [ -n "$CMODEL" ]; } && CONSENSUS=1
+  [ -n "${SNIFFR_CMD:-}" ] && CONSENSUS=0            # SNIFFR_CMD is a single custom command
+  [ -n "$CAGENT" ] || CAGENT="${AGENTS%% *}"          # default = first review agent
+  # noise filters: keep only findings at/above a severity and/or confidence.
+  # A finding missing the field is kept (never silently drop an unranked bug).
+  MIN_SEV="${SNIFFR_MIN_SEVERITY:-$(cfg_json | jq -r '.min_severity // empty')}"
+  MIN_CONF="${SNIFFR_MIN_CONFIDENCE:-$(cfg_json | jq -r '.min_confidence // empty')}"
+  # default consensus instruction (writes findings up per good-PR-comment practice)
+  DEFAULT_CPROMPT="You are consolidating code-review findings from several AI reviewers of the same pull request into one clean, high-signal review. You receive a JSON array of findings (each: file, line, severity, type, body, recommendation, confidence, agent). Apply the standards of an excellent reviewer. CLUSTER: group findings that describe the SAME underlying defect — even if anchored to adjacent lines or worded differently — into one; only merge when it is clearly the same defect; keep genuinely distinct bugs separate (two different problems on one line stay separate); a finding reported by a single reviewer stays on its own. WRITE each merged finding as one comment that states WHAT is wrong (anchored to the line), WHY it matters (do not restate what the code does), the TRIGGER (the concrete input, state, or sequence under which it fails), and a concrete one-line FIX. Be specific, never speculative, and never invent behavior. SEVERITY = the highest in the group (critical|high|medium|low). Drop style, naming, and formatting nits. SUPPRESS NOISE: prefer fewer, higher-confidence findings; drop a finding that only one reviewer raised AND with confidence below 0.5, unless it is a security, correctness, or data-loss risk — an empty result is better than speculative noise. Output ONLY a JSON array (no prose, no fences). Each element: {\"file\":\"<path>\",\"line\":<best single new-side line>,\"severity\":\"critical|high|medium|low\",\"type\":\"bug|risk|question|note\",\"body\":\"<the written-up comment: what + why + trigger, concise>\",\"recommendation\":\"<one-line concrete fix>\",\"agents\":[\"<distinct reviewers that flagged it>\"]}. Sort by severity (critical first). Use confidence only internally to choose the representative wording and to suppress noise; do not output it."
   resolve "$target"
   diff=$(gh pr diff "${num}" --repo "$repo" 2>/dev/null) || exit 0
   [ -n "$diff" ] || exit 0
@@ -159,9 +177,10 @@ if [ "${1:-}" = "--worker" ]; then
   prompt="${instructions}
 
 Output ONLY a JSON array — no prose, no markdown fences. Each item:
-{\"file\":\"<path on the new side>\",\"code\":\"<the ONE line this finding is about, copied VERBATIM from a '+' or context line in the diff, WITHOUT the leading +/space>\",\"line\":<new-side line number if you are certain, else null>,\"type\":\"bug|risk|question|note\",\"body\":\"<concise finding>\"}
+{\"file\":\"<path on the new side>\",\"code\":\"<the ONE line this finding is about, copied VERBATIM from a '+' or context line in the diff, WITHOUT the leading +/space>\",\"line\":<new-side line number if you are certain, else null>,\"type\":\"bug|risk|question|note\",\"severity\":\"critical|high|medium|low\",\"confidence\":<your certainty from 0.0 to 1.0>,\"body\":\"<concise finding>\",\"recommendation\":\"<the concrete fix in one line, or omit>\"}
 The \"code\" field is what locates the line — copy it character-for-character from
-the diff; do NOT paraphrase, reindent, or reformat it. At most ${MAX} items.
+the diff; do NOT paraphrase, reindent, or reformat it. Set \"severity\" by impact
+and \"confidence\" by how sure you are it is a real defect. At most ${MAX} items.
 If nothing significant, output [].
 
 DIFF:
@@ -169,6 +188,21 @@ ${diff}"
   scratch=$(mktemp -d); trap 'rm -rf "$scratch"' EXIT
   printf '%s' "$diff" > "$scratch/diff.patch"
   DIFF_PATH="$scratch/diff.patch"
+  # extractor: pull the largest JSON array-of-objects out of a model's stdout.
+  # (A FILE, not `python3 - <<PY`, so it can be used on the receiving end of a pipe.)
+  cat > "$scratch/xarr.py" <<'PY'
+import sys, json, re
+s = sys.stdin.read(); best = []
+for i in [m.start() for m in re.finditer(r'\[', s)]:
+    for j in range(len(s), i, -1):
+        if s[j-1] != ']': continue
+        try: v = json.loads(s[i:j])
+        except Exception: continue
+        if isinstance(v, list) and (not v or all(isinstance(x, dict) for x in v)):
+            if len(v) >= len(best): best = v
+            break
+print(json.dumps(best))
+PY
   run_agent(){
     local ag="$1"
     if [ -n "${SNIFFR_CMD:-}" ]; then printf '%s' "$prompt" | ( cd "$scratch" && eval "$SNIFFR_CMD" ); return; fi
@@ -181,6 +215,34 @@ ${diff}"
         opencode)            opencode run ${MODEL:+-m "$MODEL"} "$prompt" 2>/dev/null ;;
         ollama)              printf '%s' "$prompt" | ollama run "${MODEL:-llama3.1}" 2>/dev/null ;;
       esac )
+  }
+  # consensus runner: explicit agent + (cheap) model, prompt on stdin
+  run_model(){
+    local ag="$1" m="$2" p; p="$(cat)"
+    case "$ag" in
+      claude)              printf '%s' "$p" | claude -p ${m:+--model "$m"} 2>/dev/null ;;
+      cursor|cursor-agent) cursor-agent -f -p ${m:+--model "$m"} --output-format text "$p" 2>/dev/null ;;
+      grok)                grok -p ${m:+--model "$m"} "$p" 2>/dev/null ;;
+      opencode)            opencode run ${m:+-m "$m"} "$p" 2>/dev/null ;;
+      ollama)              printf '%s' "$p" | ollama run "${m:-llama3.1}" 2>/dev/null ;;
+      *)                   printf '%s' "$p" | codex exec --skip-git-repo-check ${m:+--model "$m"} - 2>/dev/null ;;
+    esac
+  }
+  # render a finding's comment body: "<icon> <severity> · <type>[ · N agents (chips)]"
+  # then the finding, then "↳ fix: …". Agent chips appear only for merged
+  # (consensus) findings that carry an `agents` array. Type is in the text because
+  # some backends (hunk) have no native type field. Confidence is never shown.
+  mkbadge(){
+    local it="$1" sev typ body rec chips nag icon head disp
+    sev=$(jq -r '.severity // ""' <<<"$it"); typ=$(jq -r '.type // "note"' <<<"$it")
+    body=$(jq -r '.body // ""' <<<"$it"); rec=$(jq -r '.recommendation // ""' <<<"$it")
+    chips=$(jq -r '(.agents // []) | join("·")' <<<"$it"); nag=$(jq -r '(.agents // []) | length' <<<"$it")
+    case "$sev" in critical) icon="🔴";; high) icon="🟠";; medium) icon="🟡";; low) icon="⚪";; *) icon="";; esac
+    [ -n "$sev" ] && head="$icon $sev · $typ" || head="$typ"
+    [ "${nag:-0}" -gt 0 ] && head="$head · ${nag} agent$([ "$nag" = 1 ] || echo s) ($chips)"
+    disp="$head"$'\n'"$body"
+    [ -n "$rec" ] && [ "$rec" != null ] && disp="$disp"$'\n'"↳ fix: $rec"
+    printf '%s' "$disp"
   }
   # ---- locate the live backend session ONCE (inject mode only) -------------
   found=0; sid=""; patch="${TMPDIR:-/tmp}/sniffr-${num}.patch"
@@ -197,11 +259,22 @@ ${diff}"
     fi
   fi
 
+  # consensus runs the review agents in PARALLEL (the barrier is only as long as
+  # the slowest agent, not the sum), then merges. Progressive (non-consensus) mode
+  # stays sequential so findings land in a stable order as each agent finishes.
+  PAR=0
+  if [ "$CONSENSUS" = 1 ] && [ -z "${SNIFFR_CMD:-}" ]; then
+    PAR=1
+    for ag in $AGENTS; do ( run_agent "$ag" > "$scratch/raw.$ag" 2>/dev/null ) & done
+    wait
+  fi
+
   # ---- each agent reviews the same diff; inject + reload progressively ------
   total=0; nag=0
   for ag in $AGENTS; do
     nag=$((nag+1))
-    printf '%s' "$(run_agent "$ag")" > "$scratch/agent.out"
+    if [ "$PAR" = 1 ] && [ -f "$scratch/raw.$ag" ]; then cp "$scratch/raw.$ag" "$scratch/agent.out"
+    else printf '%s' "$(run_agent "$ag")" > "$scratch/agent.out"; fi
     # Extract this agent's JSON array, then ANCHOR each finding to a real line by
     # matching its verbatim `code` quote against the diff (line is a fallback).
     # Program via heredoc on stdin; diff + agent output are passed as FILE ARGS.
@@ -303,22 +376,48 @@ for it in findings:
         continue
     hint = it.get("line") if isinstance(it.get("line"), int) else None
     fkey = match_file(fpath)
-    out.append({
+    sev = str(it.get("severity") or "").strip().lower()
+    if sev not in ("critical", "high", "medium", "low"):
+        sev = None
+    conf = it.get("confidence")
+    conf = round(float(conf), 2) if isinstance(conf, (int, float)) and 0 <= conf <= 1 else None
+    rec = (it.get("recommendation") or "").strip() or None
+    rec_item = {
         "file": fkey or fpath,
         "line": resolve_line(fkey, it.get("code"), hint),
         "type": it.get("type") or "note",
+        "severity": sev,
+        "confidence": conf,
         "body": body,
-    })
+        "recommendation": rec,
+    }
+    out.append({k: v for k, v in rec_item.items() if v is not None})
 
 print(json.dumps(out))
 PY
 )
+    # noise filters — drop findings below --min-severity / --min-confidence.
+    # A finding missing that field is kept (never silently drop an unranked bug).
+    if [ -n "$MIN_SEV" ] || [ -n "$MIN_CONF" ]; then
+      findings=$(printf '%s' "$findings" | jq -c --arg ms "${MIN_SEV:-}" --argjson mc "${MIN_CONF:-0}" '
+        def rk(s): {critical:4,high:3,medium:2,low:1}[s] // 0;
+        rk($ms) as $min
+        | [ .[] | select( ($ms=="" or .severity==null or rk(.severity) >= $min)
+                          and (.confidence==null or .confidence >= $mc) ) ]' 2>/dev/null) || findings="$findings"
+    fi
     # --format json: accumulate findings (tagged by agent) and skip injection
     if [ "$FORMAT" = json ]; then
       jq -c --slurpfile prev "$scratch/all.json" --arg a "$ag" \
         '$prev[0] + [ .[] | . + {agent:$a} ]' <<<"$findings" > "$scratch/all.json.tmp" 2>/dev/null \
         && mv "$scratch/all.json.tmp" "$scratch/all.json"
       total=$((total + $(printf '%s' "$findings" | jq 'length' 2>/dev/null || echo 0)))
+      continue
+    fi
+    # consensus: pool this agent's findings (tagged); the merge happens after the loop
+    if [ "$CONSENSUS" = 1 ]; then
+      jq -c --slurpfile prev "$scratch/all.json" --arg a "$ag" \
+        '$prev[0] + [ .[] | . + {agent:$a} ]' <<<"$findings" > "$scratch/all.json.tmp" 2>/dev/null \
+        && mv "$scratch/all.json.tmp" "$scratch/all.json"
       continue
     fi
     # ---- inject this agent's findings, stamped with its name --------------
@@ -330,24 +429,89 @@ PY
         file=$(jq -r '.file // empty'  <<<"$item"); line=$(jq -r '.line // empty' <<<"$item")
         typ=$( jq -r '.type // "note"' <<<"$item"); body=$(jq -r '.body // empty' <<<"$item")
         [ -n "$file" ] && [ -n "$body" ] || continue
+        # badge: severity icon + label, then the finding, then the fix.
+        # confidence is carried in the finding (used internally for
+        # ranking/dedupe) but intentionally NOT shown in the comment.
+        sev=$(jq -r '.severity // empty' <<<"$item"); rec=$(jq -r '.recommendation // empty' <<<"$item")
+        icon=""; case "$sev" in critical) icon="🔴";; high) icon="🟠";; medium) icon="🟡";; low) icon="⚪";; esac
+        disp="$body"; [ -n "$sev" ] && disp="$icon $sev"$'\n'"$body"
+        [ -n "$rec" ] && [ "$rec" != null ] && disp="$disp"$'\n'"↳ fix: $rec"
         if [ -n "$line" ] && [ "$line" != "null" ]; then
-          tuicr review add --session "$slug" --repo "$repo" --type "$typ" --target-file "$file" --line "$line" --side new --username "$ag" "$body" >/dev/null 2>&1 && n=$((n+1))
+          tuicr review add --session "$slug" --repo "$repo" --type "$typ" --target-file "$file" --line "$line" --side new --username "$ag" "$disp" >/dev/null 2>&1 && n=$((n+1))
         else
-          tuicr review add --session "$slug" --repo "$repo" --type "$typ" --target-file "$file" --username "$ag" "$body" >/dev/null 2>&1 && n=$((n+1))
+          tuicr review add --session "$slug" --repo "$repo" --type "$typ" --target-file "$file" --username "$ag" "$disp" >/dev/null 2>&1 && n=$((n+1))
         fi
       done < <(printf '%s' "$findings" | jq -c '.[]?')
       [ -n "${SNIFFR_AFTER_INJECT:-}" ] && sh -c "$SNIFFR_AFTER_INJECT" >/dev/null 2>&1 || true ;;
     hunk)
-      batch=$(printf '%s' "$findings" | jq -c --arg a "$ag" \
-        '{comments: [ .[] | select(.line != null) | {filePath:.file, newLine:.line, summary:.body, author:$a} ]}')
-      n=$(printf '%s' "$batch" | jq '.comments | length')
-      [ "${n:-0}" -gt 0 ] && { printf '%s' "$batch" | hunk session comment apply "$sid" --stdin --focus >/dev/null 2>&1 || n=0; } ;;
+      # hunk has no native comment type, so render the badge (severity · type +
+      # fix) into the summary text.
+      batch="[]"
+      while IFS= read -r item; do
+        [ -n "$item" ] || continue
+        line=$(jq -r '.line // empty' <<<"$item"); { [ -z "$line" ] || [ "$line" = null ]; } && continue
+        file=$(jq -r '.file // "?"' <<<"$item"); disp=$(mkbadge "$item")
+        obj=$(jq -n --arg f "$file" --argjson l "$line" --arg s "$disp" --arg a "$ag" '{filePath:$f,newLine:$l,summary:$s,author:$a}')
+        batch=$(jq -c --argjson o "$obj" '. + [$o]' <<<"$batch")
+      done < <(printf '%s' "$findings" | jq -c '.[]?')
+      n=$(jq 'length' <<<"$batch")
+      [ "${n:-0}" -gt 0 ] && { jq -n --argjson c "$batch" '{comments:$c}' | hunk session comment apply "$sid" --stdin --focus >/dev/null 2>&1 || n=0; } ;;
     *)
       inj=$(cfg_backend_cmd "$backend" inject)
       if [ -n "$inj" ]; then inj=$(expand_ph "$inj"); printf '%s' "$findings" | ( eval "$inj" ) >/dev/null 2>&1 && n=$(printf '%s' "$findings" | jq 'length' 2>/dev/null || echo 0); fi ;;
     esac
     total=$((total + ${n:-0}))
   done
+
+  # ---- consensus: merge the pooled findings into one comment per bug ----------
+  if [ "$CONSENSUS" = 1 ]; then
+    pooln=$(jq 'length' "$scratch/all.json" 2>/dev/null || echo 0)
+    merged=$(printf '%s\n\nFINDINGS:\n%s' "${CPROMPT:-$DEFAULT_CPROMPT}" "$(cat "$scratch/all.json")" \
+      | run_model "$CAGENT" "$CMODEL" | python3 "$scratch/xarr.py")
+    mn=$(printf '%s' "$merged" | jq 'length' 2>/dev/null || echo 0)
+    # if the merge failed/emptied but agents did find things, fall back to the raw
+    # pooled findings rather than silently dropping the whole review.
+    if [ "${mn:-0}" = 0 ] && [ "${pooln:-0}" -gt 0 ]; then
+      echo "sniffr: consensus merge returned nothing — falling back to raw pooled findings." >&2
+      merged="$(cat "$scratch/all.json")"
+    fi
+    [ -n "$merged" ] || merged='[]'
+    total=$(printf '%s' "$merged" | jq 'length' 2>/dev/null || echo 0)
+    if [ "$FORMAT" = json ]; then printf '%s\n' "$merged"; exit 0; fi
+    n=0
+    case "$backend" in
+    tuicr)
+      while IFS= read -r item; do
+        [ -n "$item" ] || continue
+        file=$(jq -r '.file // empty' <<<"$item"); line=$(jq -r '.line // empty' <<<"$item"); typ=$(jq -r '.type // "note"' <<<"$item")
+        [ -n "$file" ] || continue
+        disp=$(mkbadge "$item")
+        if [ -n "$line" ] && [ "$line" != null ]; then
+          tuicr review add --session "$slug" --repo "$repo" --type "$typ" --target-file "$file" --line "$line" --side new --username consensus "$disp" >/dev/null 2>&1 && n=$((n+1))
+        else
+          tuicr review add --session "$slug" --repo "$repo" --type "$typ" --target-file "$file" --username consensus "$disp" >/dev/null 2>&1 && n=$((n+1))
+        fi
+      done < <(printf '%s' "$merged" | jq -c '.[]?')
+      [ -n "${SNIFFR_AFTER_INJECT:-}" ] && sh -c "$SNIFFR_AFTER_INJECT" >/dev/null 2>&1 || true ;;
+    hunk)
+      batch="[]"
+      while IFS= read -r item; do
+        [ -n "$item" ] || continue
+        line=$(jq -r '.line // empty' <<<"$item"); { [ -z "$line" ] || [ "$line" = null ]; } && continue
+        file=$(jq -r '.file // "?"' <<<"$item"); disp=$(mkbadge "$item")
+        obj=$(jq -n --arg f "$file" --argjson l "$line" --arg s "$disp" --arg a consensus '{filePath:$f,newLine:$l,summary:$s,author:$a}')
+        batch=$(jq -c --argjson o "$obj" '. + [$o]' <<<"$batch")
+      done < <(printf '%s' "$merged" | jq -c '.[]?')
+      n=$(jq 'length' <<<"$batch")
+      [ "${n:-0}" -gt 0 ] && { jq -n --argjson c "$batch" '{comments:$c}' | hunk session comment apply "$sid" --stdin --focus >/dev/null 2>&1 || n=0; } ;;
+    *)
+      inj=$(cfg_backend_cmd "$backend" inject)
+      if [ -n "$inj" ]; then inj=$(expand_ph "$inj"); printf '%s' "$merged" | ( eval "$inj" ) >/dev/null 2>&1 && n=$total; fi ;;
+    esac
+    if [ "${n:-0}" -gt 0 ]; then notify "sniffr — consensus ready" "$nag agents → $n merged comment(s) on PR #${num}."
+    else notify "sniffr" "sniffed PR #${num} and flagged nothing."; fi
+    exit 0
+  fi
 
   if [ "$FORMAT" = json ]; then cat "$scratch/all.json"; exit 0; fi
   if [ "${total:-0}" -gt 0 ]; then notify "sniffr — review ready" "$nag agent(s) left $total comment(s) on PR #${num}."
@@ -533,7 +697,7 @@ fi
 
 # ========================= MAIN: open tuicr + spawn worker ====================
 AGENT="$(default_agent)"; target=""; BACKEND_OPT=""; MODEL_OPT=""
-FORMAT_OPT=""; AFTER_INJECT=""; NOTIFY_CMD=""; BG=0
+FORMAT_OPT=""; AFTER_INJECT=""; NOTIFY_CMD=""; BG=0; CONSENSUS_OPT=""; MIN_SEV_OPT=""; MIN_CONF_OPT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent) AGENT="${2:-}"; shift 2 ;;
@@ -542,6 +706,12 @@ while [ $# -gt 0 ]; do
     --backend=*) BACKEND_OPT="${1#*=}"; shift ;;
     --model) MODEL_OPT="${2:-}"; shift 2 ;;
     --model=*) MODEL_OPT="${1#*=}"; shift ;;
+    --consensus) CONSENSUS_OPT=1; shift ;;
+    --consensus=*) CONSENSUS_OPT="${1#*=}"; shift ;;
+    --min-severity) MIN_SEV_OPT="${2:-}"; shift 2 ;;
+    --min-severity=*) MIN_SEV_OPT="${1#*=}"; shift ;;
+    --min-confidence) MIN_CONF_OPT="${2:-}"; shift 2 ;;
+    --min-confidence=*) MIN_CONF_OPT="${1#*=}"; shift ;;
     --bg|--background|--async) BG=1; shift ;;
     --format) FORMAT_OPT="${2:-}"; shift 2 ;;
     --format=*) FORMAT_OPT="${1#*=}"; shift ;;
@@ -602,6 +772,9 @@ worker_env=(
   SNIFFR_FORMAT="$FORMAT"
   SNIFFR_AFTER_INJECT="${AFTER_INJECT:-${SNIFFR_AFTER_INJECT:-}}"
   SNIFFR_NOTIFY_CMD="${NOTIFY_CMD:-${SNIFFR_NOTIFY_CMD:-}}"
+  SNIFFR_CONSENSUS="${CONSENSUS_OPT:-${SNIFFR_CONSENSUS:-}}"
+  SNIFFR_MIN_SEVERITY="${MIN_SEV_OPT:-${SNIFFR_MIN_SEVERITY:-}}"
+  SNIFFR_MIN_CONFIDENCE="${MIN_CONF_OPT:-${SNIFFR_MIN_CONFIDENCE:-}}"
 )
 if [ "$BG" = 1 ]; then
   log="${TMPDIR:-/tmp}/sniffr-${num}.log"

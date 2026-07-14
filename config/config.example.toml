@@ -26,6 +26,25 @@ backend = "tuicr"
 # model = "gpt-5.6-codex-high"   # model for the agent (--model flag / SNIFFR_MODEL
 #                           # env override; unset = the agent's own default/auto)
 
+# --- Multi-agent consensus (optional) ---------------------------------------
+# With several agents (--agent codex,claude,…) their findings overlap. Turn on
+# consensus to MERGE them into one deduped comment per bug — stamped with which
+# agents agreed (chips) and rewritten to good-review-comment standard — using a
+# CHEAP model (the merge is "writing up", not deep reasoning). The review agents
+# run in PARALLEL, then the cheap model merges. On when [consensus].model is set
+# (or the --consensus flag / SNIFFR_CONSENSUS env).
+# [consensus]
+# model  = "claude-haiku-4-5"   # the cheap merge model
+# agent  = "claude"             # CLI that runs the merge (default: first review agent)
+# prompt = "..."               # override the built-in merge instruction (optional)
+
+# --- Noise filters (optional) -----------------------------------------------
+# Keep only findings at/above a severity and/or confidence. A finding missing the
+# field is kept (never silently drops an unranked bug). Flags --min-severity /
+# --min-confidence (and SNIFFR_MIN_SEVERITY / SNIFFR_MIN_CONFIDENCE) override.
+# min_severity   = "high"       # critical | high | medium | low
+# min_confidence = 0.6          # 0.0–1.0
+
 # --- Custom backends --------------------------------------------------------
 # Define your own review tool as a backend. sniffr resolves the agent's findings
 # (a JSON array of {file, line, type, body}, line-anchored by content), then:

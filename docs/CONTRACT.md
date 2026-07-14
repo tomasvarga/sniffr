@@ -20,15 +20,18 @@ An agent receives the review prompt (instructions + the unified diff) on **stdin
 | `file` | string            | path on the **new** side of the diff |
 | `code` | string            | the **one** line the finding is about, copied **verbatim** from a `+` or context line in the diff, **without** the leading `+`/space. This is what anchors the finding. |
 | `line` | integer \| `null` | new-side line number if the agent is certain; else `null`. Only a **fallback** — `code` wins. |
-| `type` | string            | one of `bug` \| `risk` \| `question` \| `note` |
+| `type` | string            | one of `bug` \| `risk` \| `question` \| `note` (category) |
+| `severity` | string \| omit | `critical` \| `high` \| `medium` \| `low` (impact). Optional. |
+| `confidence` | number \| omit | `0.0`–`1.0`, how sure the agent is. Optional; used internally for ranking/filtering, never shown. |
 | `body` | string            | the finding, concise |
+| `recommendation` | string \| omit | one-line concrete fix. Optional; rendered as `↳ fix: …`. |
 
-Empty array = nothing significant. Example:
+`type`/`severity`/`confidence`/`recommendation` are **additive & optional** — a tool that omits them still works. Empty array = nothing significant. Example:
 
 ```json
 [
-  {"file":"auth.py","code":"    query = \"SELECT * FROM users WHERE token = '\" + token + \"'\"","line":null,"type":"bug","body":"SQL injection via string concatenation."},
-  {"file":"auth.py","code":"    if token == None:","line":null,"type":"risk","body":"Use `is None`, not `== None`."}
+  {"file":"auth.py","code":"    query = \"… WHERE token = '\" + token + \"'\"","line":null,"type":"bug","severity":"critical","confidence":0.95,"body":"SQL injection via string concatenation.","recommendation":"Use a parameterized query."},
+  {"file":"auth.py","code":"    if token == None:","line":null,"type":"risk","severity":"low","confidence":0.8,"body":"Use `is None`, not `== None`."}
 ]
 ```
 
@@ -52,19 +55,37 @@ with the `agent` that produced it (so multi-agent runs stay attributable):
 | `file`  | string            | new-side path |
 | `line`  | integer \| `null` | resolved new-side line; `null` → file-level comment |
 | `type`  | string            | `bug` \| `risk` \| `question` \| `note` |
+| `severity` | string \| omit | `critical` \| `high` \| `medium` \| `low` (if the agent set it) |
 | `body`  | string            | the finding |
+| `recommendation` | string \| omit | one-line fix |
 | `agent` | string            | which agent flagged it (`codex`, `claude`, …) |
 
 ```json
 [
-  {"file":"auth.py","line":8,"type":"bug","body":"SQL injection via string concatenation.","agent":"codex"},
-  {"file":"auth.py","line":6,"type":"risk","body":"Use `is None`, not `== None`.","agent":"codex"}
+  {"file":"auth.py","line":8,"type":"bug","severity":"critical","body":"SQL injection via string concatenation.","recommendation":"Use a parameterized query.","agent":"codex"},
+  {"file":"auth.py","line":6,"type":"risk","severity":"low","body":"Use `is None`, not `== None`.","agent":"codex"}
 ]
 ```
 
 `sniffr <pr> --format json` prints exactly this to stdout and exits — no reviewer
 needed. It's the building block: pipe it into your own tool, a file, or a review
-API.
+API. (`confidence` is dropped from the delivered comment but kept in `--format
+json`.)
+
+### 2a. Merged (consensus) findings
+
+With `--consensus` (or `[consensus].model` set) and several agents, sniffr merges
+the pool into one finding per bug. Same shape, except **`agent` (string) becomes
+`agents` (array)** — the reviewers that agreed — and near-duplicate findings are
+collapsed:
+
+```json
+[
+  {"file":"auth.py","line":8,"severity":"critical","type":"bug","body":"SQL injection… Trigger: a crafted token alters the WHERE clause.","recommendation":"Bind the value as a query parameter.","agents":["codex","claude","cursor"]}
+]
+```
+
+The comment renders as `🔴 critical · bug · 3 agents (codex·claude·cursor)`.
 
 ## 3. Custom backend — consume resolved findings
 
