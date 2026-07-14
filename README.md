@@ -1,5 +1,7 @@
 # sniffr
 
+<img src="assets/icon.png" width="88" align="right" alt="sniffr">
+
 **An AI sniffs your PR for issues before you review it.** Point `sniffr` at a
 GitHub pull request: it runs an agent over the diff, anchors each finding to the
 exact changed line, and drops them in as **local-draft comments** in the terminal
