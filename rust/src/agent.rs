@@ -6,12 +6,12 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-/// Per-agent wall-clock cap (SNIFFR_AGENT_TIMEOUT seconds, 0 = unlimited; default 300).
+/// Per-agent wall-clock cap (SNIFFR_AGENT_TIMEOUT seconds, 0 = unlimited; default 1800 = 30 min).
 fn agent_timeout() -> Option<Duration> {
     match std::env::var("SNIFFR_AGENT_TIMEOUT").ok().and_then(|s| s.parse::<u64>().ok()) {
         Some(0) => None,
         Some(n) => Some(Duration::from_secs(n)),
-        None => Some(Duration::from_secs(300)),
+        None => Some(Duration::from_secs(1800)),
     }
 }
 
