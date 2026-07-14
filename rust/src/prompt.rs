@@ -2,8 +2,8 @@
 //! config / env override them.
 use crate::config::Config;
 
-const DEFAULT_REVIEW: &str = include_str!("../prompts/review.md");
-const DEFAULT_CONSENSUS: &str = include_str!("../prompts/consensus.md");
+const DEFAULT_REVIEW: &str = include_str!("../../prompts/review.md");
+const DEFAULT_CONSENSUS: &str = include_str!("../../prompts/consensus.md");
 
 /// Review instructions: SNIFFR_PROMPT env → config `prompt` → embedded default.
 pub fn review_instructions(cfg: &Config) -> String {

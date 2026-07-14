@@ -30,14 +30,27 @@ Still shells out to `gh`, the agent CLIs, and tuicr/hunk (those stay external).
 ## Verified
 `version`, `doctor`, `setup`, `open-cmd` (tuicr+hunk), `--format json` (canned →
 anchors L10/L18), `--min-severity`/`--min-confidence` filters, and a **live tuicr
-inject** (attach mode: 26 → 28 comments).
+inject** (attach mode: 26 → 28 comments). Plus `cargo test` — 8 unit tests over
+the resolver (parse_diff / match_file / resolve_line / extract_array).
+
+## Addressed in review (Fable + Sonnet, PR #1)
+- **Bare PR numbers restored** — `target.rs` resolves the cwd repo via `gh repo view` (was a parity regression that bailed).
+- **Agent failures surface** — `agent.rs` checks child exit status + captures stderr; `review.rs`/`consensus.rs` log a failed agent instead of `.unwrap_or_default()`, so "crashed" ≠ "found nothing". `config.rs` warns on a malformed config.
+- **Resolver hardened** — `extract_array` bracket-matching is string/escape-aware (a `code` field with `[`/`]` no longer mis-parses); `parse_diff` resets context on `diff --git` (kills the junk-lines quirk).
 
 ## Deferred hardening (from codex arch review — v2, would diverge from bash parity)
 - Make "validated anchored candidate" the boundary; reject unanchored findings in inject mode.
-- Strict (exact) `code` anchoring; linear balanced-JSON `extract_array`; deterministic path matching.
-- Validated enums (severity/kind/format/backend) + provenance struct; config validation; agent-failure propagation (currently swallowed, like the bash).
+- Strict (exact) `code` anchoring; deterministic path matching.
+- Validated enums (severity/kind/format/backend) + provenance struct.
 - These are tracked; the bash behaves the same today, so parity-first keeps them for a follow-up.
+
+## Layout
+The Rust crate lives in `rust/` (this folder); the bash reference (`bin/sniffr`),
+shared prompts (`prompts/`), `SETUP_PROMPT.md`, `config/`, `docs/`, and `assets/`
+stay at the repo root — the binary embeds the root `prompts/*.md` and
+`SETUP_PROMPT.md` at compile time via `include_str!("../../...")`.
 
 ## Distribution (next)
 `cargo dist init` → cross-compiled release binaries + Homebrew tap + curl installer + CI.
-Build now: `cargo build --release` → `target/release/sniffr`.
+Build now: `cargo build --release --manifest-path rust/Cargo.toml` → `rust/target/release/sniffr`
+(or `cargo build --release` from inside `rust/`).
