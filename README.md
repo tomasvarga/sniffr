@@ -64,6 +64,8 @@ sniffr <pr>                 # number | owner/repo#N | URL
 sniffr <pr> --agent grok    # one agent, or a comma list: --agent codex,claude,grok
 sniffr <pr> --backend hunk  # inject into hunk instead of tuicr
 sniffr <pr> --model <name>  # model for the agent (else its own default/auto)
+sniffr <pr> --consensus     # merge multi-agent findings into one comment per bug
+sniffr <pr> --min-severity high   # keep only critical/high (also --min-confidence)
 sniffr <pr> --bg            # review in the background; keep reading meanwhile
 sniffr <pr> --format json   # print resolved findings as JSON; no reviewer needed
 sniffr <pr> --after-inject 'cmd'   # run cmd once findings land (e.g. reload the reviewer)
@@ -82,6 +84,20 @@ JSON array of findings (see the [contract](docs/CONTRACT.md)).
 **Multiple agents, one pass** — `--agent codex,claude,grok`. Each reviews the same
 diff and its findings are injected **stamped by agent**, so you see who flagged
 what (two agents on the same line = high signal). They run sequentially.
+
+**Consensus** — add `--consensus` (or set `[consensus].model` in config) and the
+per-agent findings are merged into **one comment per bug**, deduped, stamped with
+which agents agreed (`🔴 critical · bug · 3 agents (codex·claude·cursor)`), and
+rewritten to good-review-comment standard (what · trigger · `↳ fix:`). The review
+agents run in **parallel**, then a **cheap** `[consensus].model` does the merge (it's
+just writing up — a small/fast model is ideal). Kills the noise of N near-identical
+comments while keeping the "who agreed" signal.
+
+**Cut noise** — `--min-severity critical|high|medium|low` and `--min-confidence
+0.0–1.0` (or `min_severity` / `min_confidence` in config) drop findings below the
+bar; a finding missing that field is kept. Findings carry an optional `severity`,
+`confidence` (used internally, never shown), and `recommendation` — see the
+[contract](docs/CONTRACT.md).
 
 **Model** (first match wins): `--model` flag · `SNIFFR_MODEL` env · `model =` in
 config · else each agent's own default. Use that agent's naming, e.g. `--model
