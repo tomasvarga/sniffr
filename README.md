@@ -20,6 +20,12 @@ workspace manager required** — sniffr attaches to whatever reviewer you run.
 > **sniffr never posts to GitHub.** Every comment is a **local draft** on your
 > machine — you read them, prune the noise, and submit what's left yourself.
 
+![sniffr — multi-agent review then consensus, in tuicr](assets/demo.gif)
+
+*Multiple agents review the diff (note the overlapping comments), then
+`--consensus` merges them into one comment per bug — severity, the agents that
+agreed, and a concrete fix.*
+
 ## How it works
 
 ```
