@@ -75,7 +75,7 @@ pub async fn run(q: &QueueArgs, cfg: &Config) -> Result<()> {
     let chosen = &prs[idx];
     let target = format!("{}#{}", chosen.repository.name_with_owner, chosen.number);
     println!("sniffr: → {target}");
-    review::run(&target, &q.review, cfg).await
+    review::run(Some(&target), &q.review, cfg).await
 }
 
 /// since (21d|3w|2mo|1y) → YYYY-MM-DD via the `date` binary (BSD then GNU).

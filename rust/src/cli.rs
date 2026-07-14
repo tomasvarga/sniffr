@@ -11,7 +11,8 @@ use clap::{Args, Parser, Subcommand};
                   (tuicr/hunk/custom) — or prints them as JSON. sniffr never posts to GitHub."
 )]
 pub struct Cli {
-    /// PR target — number | owner/repo#N | URL. Reviewing it is the default action.
+    /// What to review — a PR (number | owner/repo#N | URL), a git range (main..HEAD),
+    /// or `-` to read a unified diff from stdin. Omit and pass --diff for local changes.
     pub target: Option<String>,
 
     #[command(flatten)]
@@ -40,6 +41,12 @@ pub enum Command {
 /// Options for reviewing a PR (the default action).
 #[derive(Args, Debug, Default)]
 pub struct ReviewArgs {
+    /// Review local uncommitted changes (git diff HEAD) instead of a PR.
+    #[arg(long)]
+    pub diff: bool,
+    /// With --diff, review only staged changes (git diff --cached).
+    #[arg(long)]
+    pub staged: bool,
     /// One agent, or a comma list (codex,claude,cursor,grok,opencode,ollama).
     #[arg(long)]
     pub agent: Option<String>,

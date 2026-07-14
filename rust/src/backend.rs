@@ -40,6 +40,7 @@ pub fn is_known(cfg: &Config, name: &str) -> bool {
 /// Writes the diff to `patch_path` for backends that need a file (hunk/custom).
 pub async fn open_command(name: &str, tgt: &Target, patch_path: &str, diff: &str, cfg: &Config) -> Result<Option<String>> {
     match name {
+        "tuicr" if tgt.local => Ok(Some(tuicr_local_open(tgt))),
         "tuicr" => Ok(Some(format!("tuicr pr {}#{}", tgt.repo, tgt.num))),
         "hunk" => {
             std::fs::write(patch_path, diff).with_context(|| format!("writing {patch_path}"))?;
@@ -67,15 +68,25 @@ pub async fn inject(
 ) -> Result<usize> {
     match name {
         "tuicr" => {
-            if !wait_for(|| tuicr_has_session(&tgt.repo, &tgt.slug)).await {
-                bail!("no open tuicr session for {} — open the reviewer first (tuicr pr {}#{}), or use --format json", tgt.slug, tgt.repo, tgt.num);
-            }
+            // Discover the live session slug: PR sessions match tgt.slug; local
+            // (working-tree/range) sessions are found by `kind:"local"` for the checkout.
+            let session = if tgt.local {
+                match wait_for_local_session(&tgt.repo).await {
+                    Some(s) => s,
+                    None => bail!("no open local tuicr session for {} — open one first (tuicr -w), or use --format json", tgt.repo),
+                }
+            } else {
+                if !wait_for(|| tuicr_has_session(&tgt.repo, &tgt.slug)).await {
+                    bail!("no open tuicr session for {} — open the reviewer first (tuicr pr {}#{}), or use --format json", tgt.slug, tgt.repo, tgt.num);
+                }
+                tgt.slug.clone()
+            };
             let mut n = 0;
             for f in findings {
                 let Some(line) = f.line else { continue };
                 let ok = Command::new("tuicr")
                     .args([
-                        "review", "add", "--session", &tgt.slug, "--repo", &tgt.repo,
+                        "review", "add", "--session", &session, "--repo", &tgt.repo,
                         "--type", &f.kind, "--target-file", &f.file, "--line", &line.to_string(),
                         "--side", "new", "--username", &f.author(), &f.badge(),
                     ])
@@ -152,6 +163,41 @@ async fn tuicr_has_session(repo: &str, slug: &str) -> bool {
             .unwrap_or(false),
         Err(_) => false,
     }
+}
+
+/// The command that opens a local tuicr session matching `tgt`'s diff source.
+fn tuicr_local_open(tgt: &Target) -> String {
+    use crate::target::Source;
+    match &tgt.source {
+        // ["diff","HEAD"] / ["diff","--cached"] → working tree; ["diff",<range>] → range
+        Source::Git(args) => match args.get(1).map(String::as_str) {
+            Some("HEAD") | Some("--cached") | None => "tuicr -w".into(),
+            Some(range) => format!("tuicr -r {range}"),
+        },
+        _ => "tuicr -w".into(),
+    }
+}
+
+/// Poll for a live local (`kind:"local"`) tuicr session for this checkout (~31s).
+async fn wait_for_local_session(repo_path: &str) -> Option<String> {
+    for _ in 0..45 {
+        if let Some(s) = tuicr_local_session(repo_path).await {
+            return Some(s);
+        }
+        tokio::time::sleep(Duration::from_millis(700)).await;
+    }
+    None
+}
+
+/// The most-recently-updated local session slug for `repo_path` (a checkout path).
+async fn tuicr_local_session(repo_path: &str) -> Option<String> {
+    let out = Command::new("tuicr").args(["review", "list", "--repo", repo_path]).output().await.ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    v.as_array()?
+        .iter()
+        .filter(|s| s.get("kind").and_then(|k| k.as_str()) == Some("local"))
+        .max_by_key(|s| s.get("updated_at").and_then(|u| u.as_str()).unwrap_or("").to_owned())
+        .and_then(|s| s.get("slug").and_then(|x| x.as_str()).map(String::from))
 }
 
 async fn hunk_session(patch: &str) -> Option<String> {
