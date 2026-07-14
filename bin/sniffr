@@ -490,7 +490,47 @@ EOF
   set -- "$chosen"
   [ -n "$agent_pass" ]   && set -- --agent "$agent_pass" "$@"
   [ -n "$backend_pass" ] && set -- --backend "$backend_pass" "$@"
-  exec "$0" "$@"
+  # SNIFFR_REEXEC lets a host wrapper (e.g. herdr-sniffr) route the picked PR
+  # back through itself — so `queue` opens a pane just like `sniffr <pr>` does.
+  exec "${SNIFFR_REEXEC:-$0}" "$@"
+fi
+
+# ---- open-cmd: print the command that launches the reviewer's viewer --------
+# A building block for host wrappers that open the viewer themselves (e.g.
+# herdr-sniffr opens it in a herdr pane): given a PR, print the shell command
+# that launches the resolved backend's viewer. Prepares the diff file for
+# backends that need it. Host-agnostic — it only prints a command string.
+if [ "${1:-}" = "open-cmd" ]; then
+  shift
+  target=""; BACKEND_OPT=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --backend) BACKEND_OPT="${2:-}"; shift 2 ;;
+      --backend=*) BACKEND_OPT="${1#*=}"; shift ;;
+      --agent|--model|--format|--after-inject|--notify-cmd) shift 2 ;;  # value flags
+      --*=*) shift ;;
+      --*) shift ;;            # boolean flag (e.g. --bg)
+      *) target="$1"; shift ;;
+    esac
+  done
+  [ -n "$target" ] || die "usage: sniffr open-cmd <pr> [--backend tuicr|hunk|<custom>]"
+  for b in gh jq python3; do command -v "$b" >/dev/null || die "missing dependency: $b"; done
+  backend="$(resolve_backend)"
+  resolve "$target"
+  DIFF_PATH=""
+  case "$backend" in
+    tuicr) printf 'tuicr pr %s\n' "$target" ;;
+    hunk)  DIFF_PATH="${TMPDIR:-/tmp}/sniffr-${num}.patch"
+           gh pr diff "$num" --repo "$repo" > "$DIFF_PATH" 2>/dev/null || die "could not fetch diff for #${num}"
+           printf 'hunk patch %q\n' "$DIFF_PATH" ;;
+    *)     oc="$(cfg_backend_cmd "$backend" open)"
+           if [ -n "$oc" ]; then
+             DIFF_PATH="${TMPDIR:-/tmp}/sniffr-${num}.patch"
+             gh pr diff "$num" --repo "$repo" > "$DIFF_PATH" 2>/dev/null || true
+             printf '%s\n' "$(expand_ph "$oc")"
+           fi ;;
+  esac
+  exit 0
 fi
 
 # ========================= MAIN: open tuicr + spawn worker ====================
