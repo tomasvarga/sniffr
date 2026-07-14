@@ -155,9 +155,7 @@ if [ "${1:-}" = "--worker" ]; then
   # default); the OUTPUT CONTRACT below is fixed — the resolver depends on this
   # exact JSON shape and the verbatim `code` quote, so it is NOT user-editable.
   instructions="${SNIFFR_PROMPT:-$(cfg_json | jq -r '.prompt // empty')}"
-  [ -n "$instructions" ] || instructions="You are a senior code reviewer. Review this pull-request unified diff.
-Report ONLY high-signal findings: bugs, security issues, correctness risks, and
-important design concerns. No nits, no style preferences."
+  [ -n "$instructions" ] || instructions="You are an expert code reviewer doing a first pass over a pull request's unified diff, and your sole job is to surface findings a senior engineer would consider must-fix: genuine bugs, logic and correctness errors, security vulnerabilities (including injection and broken authentication or authorization), data loss or corruption, race conditions and other concurrency hazards, resource leaks, unhandled or swallowed errors, and changes that break the documented or evident contract of an API or behavior. Also scrutinize code that parses, converts, or validates external input for exceptions that propagate uncaught and for unchecked value ranges (for example, numeric conversions that can throw, or amounts and sizes that are never bounds-checked). Read the diff as one coherent change — trace how added, modified, and removed code interacts across hunks and with its surrounding context — rather than judging lines in isolation. Report a finding only when you can point to a concrete flaw and describe the specific input, state, or sequence of events under which it misbehaves; if the problem depends on unseen code or unverified assumptions, stay silent. Ignore style, formatting, naming, comments, test coverage, and all subjective preferences — an empty review is better than a speculative one."
   prompt="${instructions}
 
 Output ONLY a JSON array — no prose, no markdown fences. Each item:
