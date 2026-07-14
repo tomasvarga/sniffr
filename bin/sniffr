@@ -12,6 +12,7 @@
 #   sniffr <pr> --agent grok           one agent, or a comma list (codex,claude)
 #   sniffr <pr> --backend hunk   inject findings into hunk instead of tuicr
 #   sniffr <pr> --model <name>   model for the agent (else its default/auto)
+#   sniffr <pr> --bg             review in the background; keep reading meanwhile
 #   sniffr <pr> --format json    print resolved findings as JSON (no reviewer)
 #   sniffr <pr> --after-inject <cmd>   run <cmd> after findings land (reload hook)
 #   sniffr <pr> --notify-cmd <cmd>     run <cmd> to notify (SNIFFR_TITLE/SNIFFR_MSG)
@@ -494,7 +495,7 @@ fi
 
 # ========================= MAIN: open tuicr + spawn worker ====================
 AGENT="$(default_agent)"; target=""; BACKEND_OPT=""; MODEL_OPT=""
-FORMAT_OPT=""; AFTER_INJECT=""; NOTIFY_CMD=""
+FORMAT_OPT=""; AFTER_INJECT=""; NOTIFY_CMD=""; BG=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent) AGENT="${2:-}"; shift 2 ;;
@@ -503,6 +504,7 @@ while [ $# -gt 0 ]; do
     --backend=*) BACKEND_OPT="${1#*=}"; shift ;;
     --model) MODEL_OPT="${2:-}"; shift 2 ;;
     --model=*) MODEL_OPT="${1#*=}"; shift ;;
+    --bg|--background|--async) BG=1; shift ;;
     --format) FORMAT_OPT="${2:-}"; shift 2 ;;
     --format=*) FORMAT_OPT="${1#*=}"; shift ;;
     --after-inject) AFTER_INJECT="${2:-}"; shift 2 ;;
@@ -515,14 +517,15 @@ while [ $# -gt 0 ]; do
       mkdir -p "$CONF_DIR"; printf '%s\n' "$a" > "$CONF_DIR/agent"
       echo "sniffr: default agent set to '$a' (~/.config/sniffr/agent)"; exit 0 ;;
     --show-agent) echo "sniffr: default agent = $(default_agent)"; exit 0 ;;
-    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
     -*) die "unknown flag: $1" ;;
     *) target="$1"; shift ;;
   esac
 done
-[ -n "$target" ] || die "usage: sniffr <pr> [--agent NAME] [--backend tuicr|hunk|<custom>] [--format json]"
+[ -n "$target" ] || die "usage: sniffr <pr> [--agent NAME] [--backend tuicr|hunk|<custom>] [--bg] [--format json]"
 FORMAT="${FORMAT_OPT:-inject}"
 case "$FORMAT" in inject|json) ;; *) die "unknown --format '$FORMAT' (use: inject | json)" ;; esac
+[ "$BG" = 1 ] && [ "$FORMAT" = json ] && die "--bg and --format json are mutually exclusive (json prints to stdout, so it must run in the foreground)"
 backend="$(resolve_backend)"
 backend_known "$backend" || die "unknown backend '$backend'. Native: tuicr, hunk. Define custom backends under [backends.$backend] in $CONFIG_FILE."
 for b in gh jq python3; do command -v "$b" >/dev/null || die "missing dependency: $b"; done
@@ -544,19 +547,31 @@ if [ -z "${SNIFFR_CMD:-}" ]; then
 fi
 resolve "$target"
 
-# Attach mode: run the review synchronously in the foreground.
+# Attach mode: inject into a reviewer session you already have open.
 #   --format inject (default) → resolve findings and inject into the reviewer
-#     session you already have open (tuicr/hunk/custom); notify + fire
-#     --after-inject when they land.
+#     (tuicr/hunk/custom); notify + fire --after-inject when they land.
 #   --format json → print the resolved findings as a JSON array to stdout and
 #     exit (no reviewer needed) — the building block other tools wrap.
-# The herdr plugin (herdr-sniffr) is what opens the pane and passes the reload
-# hook via --after-inject; the core stays reviewer/host-agnostic.
+#   --bg → detach a background worker and return immediately, so you keep
+#     reading while the agent reviews; comments + notification land later.
+#     (Default is foreground/synchronous — required for --format json, and
+#     easier to see errors like "no reviewer open".)
+# The herdr plugin (herdr-sniffr) opens the pane, then calls sniffr --bg and
+# passes the reload nudge via --after-inject; the core stays host-agnostic.
+worker_env=(
+  SNIFFR_AGENT="$AGENT"
+  SNIFFR_MODEL="${MODEL_OPT:-${SNIFFR_MODEL:-}}"
+  SNIFFR_FORMAT="$FORMAT"
+  SNIFFR_AFTER_INJECT="${AFTER_INJECT:-${SNIFFR_AFTER_INJECT:-}}"
+  SNIFFR_NOTIFY_CMD="${NOTIFY_CMD:-${SNIFFR_NOTIFY_CMD:-}}"
+)
+if [ "$BG" = 1 ]; then
+  log="${TMPDIR:-/tmp}/sniffr-${num}.log"
+  nohup env "${worker_env[@]}" "$0" --worker "$target" "" "$backend" >"$log" 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  echo "sniffr: ${AGENT} sniffing #${num} in the background → ${backend} (log: $log)"
+  echo "  ${url}"
+  exit 0
+fi
 [ "$FORMAT" = json ] || echo "sniffr: sniffing #${num} with ${AGENT} → ${backend} …"
-exec env \
-  SNIFFR_AGENT="$AGENT" \
-  SNIFFR_MODEL="${MODEL_OPT:-${SNIFFR_MODEL:-}}" \
-  SNIFFR_FORMAT="$FORMAT" \
-  SNIFFR_AFTER_INJECT="${AFTER_INJECT:-${SNIFFR_AFTER_INJECT:-}}" \
-  SNIFFR_NOTIFY_CMD="${NOTIFY_CMD:-${SNIFFR_NOTIFY_CMD:-}}" \
-  "$0" --worker "$target" "" "$backend"
+exec env "${worker_env[@]}" "$0" --worker "$target" "" "$backend"

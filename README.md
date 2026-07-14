@@ -32,11 +32,13 @@ sniffr <pr>
 it first, then run sniffr:
 
 ```bash
-tuicr pr owner/repo#123      # (or: hunk patch <diff>) — in one pane/tab
-sniffr owner/repo#123        # in another — findings appear in the reviewer
+tuicr pr owner/repo#123          # (or: hunk patch <diff>) — in one pane/tab
+sniffr owner/repo#123 --bg       # in another — keep reading; comments land in ~30s
 ```
 
-Or skip the reviewer entirely and take the findings as JSON:
+`--bg` detaches the review so you keep reading while the agent works; a
+notification fires when the comments land (drop it for a foreground run). Or skip
+the reviewer entirely and take the findings as JSON:
 
 ```bash
 sniffr owner/repo#123 --format json | jq .
@@ -60,6 +62,7 @@ sniffr <pr>                 # number | owner/repo#N | URL
 sniffr <pr> --agent grok    # one agent, or a comma list: --agent codex,claude,grok
 sniffr <pr> --backend hunk  # inject into hunk instead of tuicr
 sniffr <pr> --model <name>  # model for the agent (else its own default/auto)
+sniffr <pr> --bg            # review in the background; keep reading meanwhile
 sniffr <pr> --format json   # print resolved findings as JSON; no reviewer needed
 sniffr <pr> --after-inject 'cmd'   # run cmd once findings land (e.g. reload the reviewer)
 sniffr <pr> --notify-cmd 'cmd'     # run cmd to notify (env SNIFFR_TITLE / SNIFFR_MSG)
