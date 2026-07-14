@@ -44,6 +44,14 @@ die(){ echo "sniffr: $*" >&2; exit 1; }
 CONF_DIR="$HOME/.config/sniffr"
 CONFIG_FILE="$CONF_DIR/config.toml"
 
+# Repo root (resolve symlinks so it works when `sniffr` is symlinked onto PATH).
+_self="${BASH_SOURCE[0]:-$0}"
+while [ -L "$_self" ]; do t="$(readlink "$_self")"; case "$t" in /*) _self="$t" ;; *) _self="$(dirname "$_self")/$t" ;; esac; done
+SNIFFR_ROOT="$(cd "$(dirname "$_self")/.." 2>/dev/null && pwd)"
+# Default prompts live in prompts/*.txt (data, not baked into this script), so
+# they can be read/edited/versioned. A user override in config always wins.
+read_prompt(){ local f="$SNIFFR_ROOT/prompts/$1.txt"; [ -f "$f" ] && cat "$f"; }
+
 # config.toml as JSON ({} if missing/unparseable). Needs python ≥3.11 (tomllib).
 cfg_json(){
   [ -f "$CONFIG_FILE" ] || { echo '{}'; return; }
@@ -164,16 +172,19 @@ if [ "${1:-}" = "--worker" ]; then
   # A finding missing the field is kept (never silently drop an unranked bug).
   MIN_SEV="${SNIFFR_MIN_SEVERITY:-$(cfg_json | jq -r '.min_severity // empty')}"
   MIN_CONF="${SNIFFR_MIN_CONFIDENCE:-$(cfg_json | jq -r '.min_confidence // empty')}"
-  # default consensus instruction (writes findings up per good-PR-comment practice)
-  DEFAULT_CPROMPT="You are consolidating code-review findings from several AI reviewers of the same pull request into one clean, high-signal review. You receive a JSON array of findings (each: file, line, severity, type, body, recommendation, confidence, agent). Apply the standards of an excellent reviewer. CLUSTER: group findings that describe the SAME underlying defect — even if anchored to adjacent lines or worded differently — into one; only merge when it is clearly the same defect; keep genuinely distinct bugs separate (two different problems on one line stay separate); a finding reported by a single reviewer stays on its own. WRITE each merged finding as one comment that states WHAT is wrong (anchored to the line), WHY it matters (do not restate what the code does), the TRIGGER (the concrete input, state, or sequence under which it fails), and a concrete one-line FIX. Be specific, never speculative, and never invent behavior. SEVERITY = the highest in the group (critical|high|medium|low). Drop style, naming, and formatting nits. SUPPRESS NOISE: prefer fewer, higher-confidence findings; drop a finding that only one reviewer raised AND with confidence below 0.5, unless it is a security, correctness, or data-loss risk — an empty result is better than speculative noise. Output ONLY a JSON array (no prose, no fences). Each element: {\"file\":\"<path>\",\"line\":<best single new-side line>,\"severity\":\"critical|high|medium|low\",\"type\":\"bug|risk|question|note\",\"body\":\"<the written-up comment: what + why + trigger, concise>\",\"recommendation\":\"<one-line concrete fix>\",\"agents\":[\"<distinct reviewers that flagged it>\"]}. Sort by severity (critical first). Use confidence only internally to choose the representative wording and to suppress noise; do not output it."
+  # default consensus instruction: config [consensus].prompt → prompts/consensus.txt
+  DEFAULT_CPROMPT="$(read_prompt consensus)"
+  [ -n "$DEFAULT_CPROMPT" ] || DEFAULT_CPROMPT="Merge these multi-agent code-review findings: cluster ones describing the same defect into a single finding (keep distinct bugs separate), write each as what/why/trigger/fix, set severity to the group max, drop style nits, and suppress lone low-confidence findings. Output ONLY a JSON array of {file,line,severity,type,body,recommendation,agents:[...]}, sorted critical first."
   resolve "$target"
   diff=$(gh pr diff "${num}" --repo "$repo" 2>/dev/null) || exit 0
   [ -n "$diff" ] || exit 0
   # review INSTRUCTIONS are configurable (SNIFFR_PROMPT env → config `prompt` →
   # default); the OUTPUT CONTRACT below is fixed — the resolver depends on this
   # exact JSON shape and the verbatim `code` quote, so it is NOT user-editable.
+  # instructions: SNIFFR_PROMPT env → config `prompt` → shipped prompts/review.txt
   instructions="${SNIFFR_PROMPT:-$(cfg_json | jq -r '.prompt // empty')}"
-  [ -n "$instructions" ] || instructions="You are an expert code reviewer doing a first pass over a pull request's unified diff, and your sole job is to surface findings a senior engineer would consider must-fix: genuine bugs, logic and correctness errors, security vulnerabilities (including injection and broken authentication or authorization), data loss or corruption, race conditions and other concurrency hazards, resource leaks, unhandled or swallowed errors, and changes that break the documented or evident contract of an API or behavior. Also scrutinize code that parses, converts, or validates external input for exceptions that propagate uncaught and for unchecked value ranges (for example, numeric conversions that can throw, or amounts and sizes that are never bounds-checked). Read the diff as one coherent change — trace how added, modified, and removed code interacts across hunks and with its surrounding context — rather than judging lines in isolation. Report a finding only when you can point to a concrete flaw and describe the specific input, state, or sequence of events under which it misbehaves; if the problem depends on unseen code or unverified assumptions, stay silent. Ignore style, formatting, naming, comments, test coverage, and all subjective preferences — an empty review is better than a speculative one."
+  [ -n "$instructions" ] || instructions="$(read_prompt review)"
+  [ -n "$instructions" ] || instructions="You are a senior code reviewer. Report only high-signal, must-fix findings (bugs, security, correctness, concurrency, resource/error handling, broken contracts). Reason in context; be concrete, not speculative; ignore style nits."
   prompt="${instructions}
 
 Output ONLY a JSON array — no prose, no markdown fences. Each item:
