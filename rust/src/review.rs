@@ -13,10 +13,10 @@ use tokio::task::JoinSet;
 
 const MAX_PARALLEL: usize = 4;
 
-pub async fn run(target_str: &str, args: &ReviewArgs, cfg: &Config) -> Result<()> {
+pub async fn run(target_str: Option<&str>, args: &ReviewArgs, cfg: &Config) -> Result<()> {
     // --bg: detach a worker and return (unless we ARE the detached worker).
     if args.bg && std::env::var_os("SNIFFR_BG_WORKER").is_none() {
-        return spawn_detached(target_str);
+        return spawn_detached(target_str.unwrap_or("local diff"));
     }
 
     let format = args
@@ -32,13 +32,13 @@ pub async fn run(target_str: &str, args: &ReviewArgs, cfg: &Config) -> Result<()
         || cfg.consensus.model.is_some()
         || std::env::var("SNIFFR_CONSENSUS_MODEL").is_ok_and(|v| !v.is_empty());
 
-    let tgt = target::parse(target_str)?;
+    let tgt = target::resolve(target_str, args.diff, args.staged)?;
     let diff = target::diff(&tgt).await?;
     if diff.trim().is_empty() {
         if format == "json" {
             println!("[]");
         } else {
-            notify("sniffr", &format!("sniffed #{} and flagged nothing.", tgt.num));
+            notify("sniffr", &format!("sniffed {} and flagged nothing.", label(&tgt)));
         }
         return Ok(());
     }
@@ -84,7 +84,7 @@ pub async fn run(target_str: &str, args: &ReviewArgs, cfg: &Config) -> Result<()
             println!("{}", serde_json::to_string_pretty(&findings)?);
         } else {
             let n = backend::inject(&backend_name, &tgt, &patch, &findings, after.as_deref(), cfg).await?;
-            notify_done(consensus_on, agents.len(), n, &tgt.num);
+            notify_done(consensus_on, agents.len(), n, &label(&tgt));
         }
     } else {
         // progressive inject: each agent's findings land as it finishes
@@ -100,9 +100,18 @@ pub async fn run(target_str: &str, args: &ReviewArgs, cfg: &Config) -> Result<()
             let f = apply_filters(resolve::resolve(&diff, &out, ag), args, cfg);
             total += backend::inject(&backend_name, &tgt, &patch, &f, after.as_deref(), cfg).await?;
         }
-        notify_done(false, agents.len(), total, &tgt.num);
+        notify_done(false, agents.len(), total, &label(&tgt));
     }
     Ok(())
+}
+
+/// Human label for notifications: `PR #123` or `local diff (worktree)`.
+fn label(tgt: &crate::target::Target) -> String {
+    if tgt.local {
+        format!("local diff ({})", tgt.num)
+    } else {
+        format!("PR #{}", tgt.num)
+    }
 }
 
 async fn run_agents_parallel(agents: &[String], model: Option<String>, full: Arc<str>, diff: Arc<str>) -> Vec<Finding> {
@@ -196,12 +205,12 @@ fn spawn_detached(target_str: &str) -> Result<()> {
     Ok(())
 }
 
-fn notify_done(consensus: bool, nagents: usize, n: usize, num: &str) {
+fn notify_done(consensus: bool, nagents: usize, n: usize, target: &str) {
     if n > 0 {
         let title = if consensus { "sniffr — consensus ready" } else { "sniffr — review ready" };
-        notify(title, &format!("{nagents} agent(s) → {n} comment(s) on PR #{num}."));
+        notify(title, &format!("{nagents} agent(s) → {n} comment(s) on {target}."));
     } else {
-        notify("sniffr", &format!("sniffed PR #{num} and flagged nothing."));
+        notify("sniffr", &format!("sniffed {target} and flagged nothing."));
     }
 }
 

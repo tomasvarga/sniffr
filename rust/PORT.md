@@ -6,6 +6,19 @@ inject + consensus + progressive + parallel), backends (tuicr/hunk/custom),
 queue, doctor, setup, update, version, open-cmd, `--bg`, and the noise filters
 are all ported and exercised.
 
+## Local diffs (beyond the bash — new on `rust-local-diff`)
+sniffr no longer needs a GitHub PR. `target.rs` resolves any of:
+- `sniffr --diff` → local uncommitted changes (`git diff HEAD`)
+- `sniffr --diff --staged` → staged only (`git diff --cached`)
+- `sniffr main..HEAD` → a git ref range (`git diff <range>`)
+- `sniffr -` → a unified diff on stdin
+- `sniffr owner/repo#N | URL | number` → a PR (unchanged)
+
+Backends: `--format json` and `hunk` work on any diff. **tuicr works locally too** —
+sniffr keys on the checkout path and discovers the live `kind:"local"` session
+(`tuicr review list --repo .`), then injects with `review add --repo . --session <slug>`.
+Open the local reviewer with `tuicr -w` (working tree) or `tuicr -r <range>`.
+
 ## Crates
 clap (CLI) · tokio (async + parallel agents, JoinSet+Semaphore) · serde/serde_json ·
 toml (config) · regex (diff parse) · anyhow · dirs · which · owo-colors.

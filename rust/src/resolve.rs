@@ -50,7 +50,7 @@ pub fn resolve(diff: &str, agent_output: &str, agent: &str) -> Vec<Finding> {
 /// Pull the largest JSON array-of-`T` out of a model's stdout (handles prose or
 /// fences around it). Used for agent output (AgentFinding) and merged (Finding).
 pub fn extract_array<T: serde::de::DeserializeOwned>(s: &str) -> Vec<T> {
-    if let Ok(v) = serde_json::from_str::<Vec<T>>(s.trim()) {
+    if let Some(v) = parse_array(s.trim()) {
         return v;
     }
     let bytes = s.as_bytes();
@@ -59,7 +59,7 @@ pub fn extract_array<T: serde::de::DeserializeOwned>(s: &str) -> Vec<T> {
         // find this '['s matching ']' with bracket depth that skips over JSON
         // string contents, so a `code` field like "arr[0]" can't fool the scan
         if let Some(j) = balanced_end(bytes, i) {
-            if let Ok(v) = serde_json::from_str::<Vec<T>>(&s[i..j]) {
+            if let Some(v) = parse_array(&s[i..j]) {
                 if v.len() >= best.len() {
                     best = v;
                 }
@@ -67,6 +67,18 @@ pub fn extract_array<T: serde::de::DeserializeOwned>(s: &str) -> Vec<T> {
         }
     }
     best
+}
+
+/// Decode an array item-by-item so one malformed model finding does not make
+/// us discard every otherwise valid finding in the response.
+fn parse_array<T: serde::de::DeserializeOwned>(s: &str) -> Option<Vec<T>> {
+    let values = serde_json::from_str::<Vec<serde_json::Value>>(s).ok()?;
+    Some(
+        values
+            .into_iter()
+            .filter_map(|value| serde_json::from_value(value).ok())
+            .collect(),
+    )
 }
 
 /// Given `open` = byte index of a `[`, return the index just past its matching
@@ -334,6 +346,17 @@ index 1..2 100644
         let out = r#"noise [1,2] then [{"file":"x"},{"file":"y"},{"file":"z"}]"#;
         let v: Vec<AgentFinding> = extract_array(out);
         assert_eq!(v.len(), 3);
+    }
+
+    #[test]
+    fn extract_array_skips_malformed_items() {
+        let out = r#"[
+            {"file":"good.rs","body":"valid finding","line":12},
+            {"file":"bad.rs","body":"invalid line type","line":"twelve"}
+        ]"#;
+        let v: Vec<AgentFinding> = extract_array(out);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].file.as_deref(), Some("good.rs"));
     }
 
     #[test]

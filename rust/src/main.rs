@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Queue(q)) => queue::run(q, &Config::load()).await?,
         Some(Command::OpenCmd(o)) => {
             let cfg = Config::load();
-            let tgt = target::parse(&o.target)?;
+            let tgt = target::resolve(Some(&o.target), false, false)?;
             let diff = target::diff(&tgt).await?;
             let backend_name = backend::resolve(&cfg, o.backend.as_deref());
             let patch = std::env::temp_dir()
@@ -43,13 +43,16 @@ async fn main() -> anyhow::Result<()> {
                 println!("{cmd}");
             }
         }
-        None => match &cli.target {
-            Some(t) => review::run(t, &cli.review, &Config::load()).await?,
-            None => {
+        None => {
+            // review is the default action — for a PR/range/stdin target, or a
+            // local diff (--diff/--staged) with no positional target.
+            if cli.target.is_some() || cli.review.diff || cli.review.staged {
+                review::run(cli.target.as_deref(), &cli.review, &Config::load()).await?;
+            } else {
                 Cli::command().print_help()?;
                 println!();
             }
-        },
+        }
     }
     Ok(())
 }
